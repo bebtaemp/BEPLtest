@@ -108,6 +108,8 @@
             opacity: 1;
         }
     </style>
+    <!-- Safety net: if JS is disabled or fails, never leave content hidden -->
+    <noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
 </head>
 
 <body class="bg-bepl-bg text-bepl-text-body font-sans subpixel-antialiased overflow-x-hidden selection:bg-bepl-gold selection:text-bepl-bg flex flex-col min-h-[100dvh]">
@@ -525,7 +527,14 @@
         // ==========================================
         const SUPABASE_URL = 'https://mdchsrutunnbjdmoxjch.supabase.co';
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kY2hzcnV0dW5uYmpkbW94amNoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMyMTc1MzMsImV4cCI6MjEwODc5MzUzM30.8glBlQqax_63Z-JSwvYhsLOsxoQvJaGzz-akFyeQiwk';
-        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // Fail-safe init: a CDN/key problem must never stop the rest of the page's JS
+        let supabaseClient = null;
+        try {
+            supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        } catch (err) {
+            console.error('Supabase failed to load:', err);
+        }
 
         // UI Switching Logic
         function switchUI(targetId) {
@@ -722,6 +731,13 @@
                 }, false);
             });
 
+            // Shared feedback helper
+            function showFeedback(el, msg) {
+                el.innerText = msg;
+                el.classList.remove('opacity-0');
+                setTimeout(() => el.classList.add('opacity-0'), 5000);
+            }
+
             // 1. Corporate Inquiry Form Handler (Supabase)
             const clientForm = document.getElementById('clientForm');
             const clientBtn = document.getElementById('clientSubmitBtn');
@@ -738,4 +754,86 @@
                     clientFeedback.classList.add('opacity-0');
 
                     try {
+                        if (!supabaseClient) throw new Error('Database unavailable');
                         const { error } = await supabaseClient
+                            .from('client_inquiries')   // <-- change to your table name
+                            .insert([{
+                                company_name: document.getElementById('comp_name').value.trim(),
+                                contact_person: document.getElementById('client_contact').value.trim(),
+                                email: document.getElementById('client_email').value.trim(),
+                                phone: document.getElementById('clientCountryCodeInput').value + ' ' + document.getElementById('client_phone').value.trim(),
+                                sector: document.getElementById('client_sector').value.trim(),
+                                message: document.getElementById('client_message').value.trim()
+                            }]);
+                        if (error) throw error;
+                        showFeedback(clientFeedback, 'Mandate received. We will be in touch.');
+                        clientForm.reset();
+                        clientForm.querySelectorAll('textarea').forEach(t => t.style.height = 'auto');
+                    } catch (err) {
+                        console.error(err);
+                        showFeedback(clientFeedback, 'Something went wrong. Please try again.');
+                    } finally {
+                        clientBtn.innerText = originalText;
+                        clientBtn.disabled = false;
+                    }
+                });
+            }
+
+            // 2. Candidate Form Handler (Supabase)
+            const candForm = document.getElementById('candidateForm');
+            const candBtn = document.getElementById('candSubmitBtn');
+            const candFeedback = document.getElementById('candFeedback');
+
+            if (candForm) {
+                candForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    if (!candForm.checkValidity()) { candForm.reportValidity(); return; }
+
+                    const file = resumeInput && resumeInput.files ? resumeInput.files[0] : null;
+                    if (!file) { showFeedback(candFeedback, 'Please attach your CV.'); return; }
+                    if (file.size > 10 * 1024 * 1024) { showFeedback(candFeedback, 'File must be under 10MB.'); return; }
+
+                    const originalText = candBtn.innerText;
+                    candBtn.innerText = 'Uploading...';
+                    candBtn.disabled = true;
+                    candFeedback.classList.add('opacity-0');
+
+                    try {
+                        if (!supabaseClient) throw new Error('Database unavailable');
+                        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+                        const path = `${Date.now()}-${safeName}`;
+
+                        const { error: upErr } = await supabaseClient.storage
+                            .from('resumes')            // <-- change to your bucket name
+                            .upload(path, file);
+                        if (upErr) throw upErr;
+
+                        const { data: urlData } = supabaseClient.storage.from('resumes').getPublicUrl(path);
+
+                        const { error } = await supabaseClient
+                            .from('candidates')         // <-- change to your table name
+                            .insert([{
+                                full_name: document.getElementById('cand_name').value.trim(),
+                                email: document.getElementById('cand_email').value.trim(),
+                                phone: document.getElementById('candCountryCodeInput').value + ' ' + document.getElementById('cand_phone').value.trim(),
+                                industry: document.getElementById('cand_industry').value.trim(),
+                                resume_url: urlData.publicUrl
+                            }]);
+                        if (error) throw error;
+
+                        showFeedback(candFeedback, 'CV received. Thank you!');
+                        candForm.reset();
+                        resumeLabelText.innerHTML = defaultResumeLabelHTML;
+                    } catch (err) {
+                        console.error(err);
+                        showFeedback(candFeedback, 'Upload failed. Please try again.');
+                    } finally {
+                        candBtn.innerText = originalText;
+                        candBtn.disabled = false;
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>
